@@ -1,4 +1,4 @@
-# MultiFrame-LPR
+# ICPR2026
 
 Multi-frame OCR solution for the **ICPR 2026 Challenge on Low-Resolution License Plate Recognition**.
 
@@ -60,8 +60,8 @@ Modern architecture leveraging ResNet34 backbone and Transformer encoder with po
 
 **Using uv (recommended):**
 ```bash
-git clone https://github.com/duongtruongbinh/MultiFrame-LPR.git
-cd MultiFrame-LPR
+git clone https://github.com/nguyenvanminh281005/ICPR2026
+cd ICPR2026
 uv sync
 ```
 
