@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from src.utils.common import seed_everything
 from src.utils.postprocess import decode_with_confidence
+from src.training.contrastive_loss import get_loss_function
 
 
 class Trainer:
@@ -22,7 +23,8 @@ class Trainer:
         train_loader: DataLoader,
         val_loader: Optional[DataLoader],
         config,
-        idx2char: Dict[int, str]
+        idx2char: Dict[int, str],
+        sampler=None
     ):
         """
         Args:
@@ -31,6 +33,7 @@ class Trainer:
             val_loader: Validation data loader (can be None).
             config: Configuration object with training parameters.
             idx2char: Index to character mapping for decoding.
+            sampler: Optional curriculum sampler (has set_epoch method).
         """
         self.model = model
         self.train_loader = train_loader
@@ -38,10 +41,39 @@ class Trainer:
         self.config = config
         self.idx2char = idx2char
         self.device = config.DEVICE
+        self.sampler = sampler
         seed_everything(config.SEED, benchmark=config.USE_CUDNN_BENCHMARK)
         
-        # Loss and optimizer
-        self.criterion = nn.CTCLoss(blank=0, zero_infinity=True, reduction='mean')
+        # Loss function - support multiple types
+        loss_type = getattr(config, 'LOSS_TYPE', 'ctc')
+        if loss_type == 'ctc':
+            self.criterion = nn.CTCLoss(blank=0, zero_infinity=True, reduction='mean')
+            self.use_combined_loss = False
+        elif loss_type == 'combined':
+            self.criterion = get_loss_function(
+                'combined',
+                ctc_weight=1.0,
+                contrastive_weight=getattr(config, 'CONTRASTIVE_WEIGHT', 0.1),
+                use_contrastive=getattr(config, 'USE_CONTRASTIVE', False),
+                temperature=getattr(config, 'CONTRASTIVE_TEMPERATURE', 0.07)
+            )
+            self.use_combined_loss = True
+        elif loss_type == 'focal':
+            self.criterion = get_loss_function(
+                'focal',
+                gamma=getattr(config, 'FOCAL_GAMMA', 2.0)
+            )
+            self.use_combined_loss = False
+        elif loss_type == 'smoothing':
+            self.criterion = get_loss_function(
+                'smoothing',
+                smoothing=getattr(config, 'LABEL_SMOOTHING', 0.1)
+            )
+            self.use_combined_loss = False
+        else:
+            self.criterion = nn.CTCLoss(blank=0, zero_infinity=True, reduction='mean')
+            self.use_combined_loss = False
+        
         self.optimizer = optim.AdamW(
             model.parameters(),
             lr=config.LEARNING_RATE,
@@ -58,6 +90,8 @@ class Trainer:
         # Tracking
         self.best_acc = 0.0
         self.current_epoch = 0
+        self.scheduler_step_count = 0
+        self.scheduler_total_steps = len(train_loader) * config.EPOCHS
     
     def _get_output_path(self, filename: str) -> str:
         """Get full path for output file in configured directory."""
@@ -90,6 +124,10 @@ class Trainer:
                     dtype=torch.long
                 )
                 loss = self.criterion(preds_permuted, targets, input_lengths, target_lengths)
+                
+                # Handle combined loss returning tuple (loss, loss_dict)
+                if isinstance(loss, tuple):
+                    loss = loss[0]
 
             # Scale loss & backward
             self.scaler.scale(loss).backward()
@@ -108,8 +146,10 @@ class Trainer:
             self.scaler.update()
             
             # Step scheduler only if optimizer actually stepped (scale not reduced)
-            if self.scaler.get_scale() >= scale_before:
+            # and we haven't exceeded the total configured steps
+            if self.scaler.get_scale() >= scale_before and self.scheduler_step_count < self.scheduler_total_steps:
                 self.scheduler.step()
+                self.scheduler_step_count += 1
             
             epoch_loss += loss.item()
             pbar.set_postfix({'loss': loss.item(), 'lr': self.scheduler.get_last_lr()[0]})
@@ -151,6 +191,9 @@ class Trainer:
                     input_lengths,
                     target_lengths
                 )
+                # Handle combined loss returning tuple (loss, loss_dict)
+                if isinstance(loss, tuple):
+                    loss = loss[0]
                 val_loss += loss.item()
 
                 # Decode predictions
@@ -200,6 +243,10 @@ class Trainer:
         
         for epoch in range(self.config.EPOCHS):
             self.current_epoch = epoch
+            
+            # Update curriculum sampler if present
+            if self.sampler is not None and hasattr(self.sampler, 'set_epoch'):
+                self.sampler.set_epoch(epoch)
             
             # Training
             avg_train_loss = self.train_one_epoch()

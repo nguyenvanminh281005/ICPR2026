@@ -3,11 +3,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from src.models.components import ResNetFeatureExtractor, AttentionFusion, PositionalEncoding, STNBlock
+from src.models.temporal_fusion import get_temporal_fusion, QualityAwareAttentionFusion, HybridTemporalFusion
 
 class ResTranOCR(nn.Module):
     """
     Modern OCR architecture using optional STN, ResNet34 and Transformer.
-    Pipeline: Input (5 frames) -> [Optional STN] -> ResNet34 -> Attention Fusion -> Transformer -> CTC Head
+    Pipeline: Input (5 frames) -> [Optional STN] -> ResNet34 -> Temporal Fusion -> Transformer -> CTC Head
+    
+    Supports multiple temporal fusion strategies:
+    - attention: Original simple attention fusion
+    - quality: Quality-aware attention with per-frame quality scoring
+    - transformer: Cross-frame transformer for global temporal modeling
+    - hybrid: Combines quality-aware and transformer approaches
     """
     def __init__(
         self,
@@ -16,21 +23,32 @@ class ResTranOCR(nn.Module):
         transformer_layers: int = 3,
         transformer_ff_dim: int = 2048,
         dropout: float = 0.1,
-        use_stn: bool = True
+        use_stn: bool = True,
+        temporal_fusion_type: str = "attention"
     ):
         super().__init__()
         self.cnn_channels = 512
         self.use_stn = use_stn
+        self.temporal_fusion_type = temporal_fusion_type
         
         # 1. Spatial Transformer Network
         if self.use_stn:
             self.stn = STNBlock(in_channels=3)
 
         # 2. Backbone: ResNet34
-        self.backbone = ResNetFeatureExtractor(pretrained=False)
+        self.backbone = ResNetFeatureExtractor(pretrained=True)
         
-        # 3. Attention Fusion
-        self.fusion = AttentionFusion(channels=self.cnn_channels)
+        # 3. Temporal Fusion (supports multiple strategies)
+        if temporal_fusion_type == "attention":
+            self.fusion = AttentionFusion(channels=self.cnn_channels)
+        elif temporal_fusion_type in ["quality", "transformer", "hybrid"]:
+            self.fusion = get_temporal_fusion(
+                fusion_type=temporal_fusion_type,
+                channels=self.cnn_channels,
+                num_frames=5
+            )
+        else:
+            raise ValueError(f"Unknown fusion type: {temporal_fusion_type}")
         
         # 4. Transformer Encoder
         self.pos_encoder = PositionalEncoding(d_model=self.cnn_channels, dropout=dropout)

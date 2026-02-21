@@ -66,6 +66,7 @@ class MultiFrameDataset(Dataset):
         augmentation_level: str = "full",
         is_test: bool = False,
         full_train: bool = False,
+        ensemble: bool = False,
     ):
         """
         Args:
@@ -107,6 +108,7 @@ class MultiFrameDataset(Dataset):
         self.augmentation_level = augmentation_level
         self.is_test = is_test
         self.full_train = full_train
+        self.ensemble = ensemble
         
         if mode == 'train':
             # Training: apply augmentation on the fly
@@ -251,8 +253,18 @@ class MultiFrameDataset(Dataset):
             except Exception:
                 pass
 
+    # Frame indices to select from test-public (10-frame) tracks
+    TEST_PUBLIC_FRAME_INDICES = {"001", "002", "003", "005", "008"}
+
     def _index_test_samples(self, tracks: List[str]) -> None:
-        """Index test samples without labels."""
+        """Index test samples without labels.
+        
+        For test-public (10 frames per track): selects only frames with indices 001, 002, 003, 005, 008.
+        For test (5 frames per track): loads all frames as-is.
+        """
+        # Detect if this is a test-public dataset
+        is_test_public = any("test-public" in t for t in tracks[:5])
+
         for track_path in tqdm(tracks, desc="Indexing test"):
             track_id = os.path.basename(track_path)
             
@@ -261,6 +273,14 @@ class MultiFrameDataset(Dataset):
                 glob.glob(os.path.join(track_path, "lr-*.png")) +
                 glob.glob(os.path.join(track_path, "lr-*.jpg"))
             )
+            
+            # For test-public: keep only selected frame indices (unless ensemble mode)
+            if is_test_public and not self.ensemble:
+                lr_files = [
+                    f for f in lr_files
+                    if os.path.splitext(os.path.basename(f))[0].split("-")[-1]
+                    in self.TEST_PUBLIC_FRAME_INDICES
+                ]
             
             if lr_files:
                 self.samples.append({

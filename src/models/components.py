@@ -116,7 +116,7 @@ class ResNetFeatureExtractor(nn.Module):
     ResNet-based backbone customized for OCR.
     Uses ResNet34 with modified strides to preserve width (sequence length) while reducing height.
     """
-    def __init__(self, pretrained: bool = False):
+    def __init__(self, pretrained: bool = True):
         super().__init__()
         
         # Load ResNet34 from torchvision

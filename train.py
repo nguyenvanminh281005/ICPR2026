@@ -15,6 +15,7 @@ from src.data.dataset import MultiFrameDataset
 from src.models.crnn import MultiFrameCRNN
 from src.models.restran import ResTranOCR
 from src.training.trainer import Trainer
+from src.training.curriculum import get_curriculum_sampler
 from src.utils.common import seed_everything
 
 
@@ -91,6 +92,46 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Train on full dataset and generate submission file for test data",
     )
+    
+    # New feature arguments
+    parser.add_argument(
+        "--temporal-fusion",
+        type=str,
+        choices=["attention", "quality", "transformer", "hybrid"],
+        default=None,
+        help="Temporal fusion strategy (default: from config)"
+    )
+    parser.add_argument(
+        "--loss-type",
+        type=str,
+        choices=["ctc", "combined", "focal", "smoothing"],
+        default=None,
+        help="Loss function type (default: from config)"
+    )
+    parser.add_argument(
+        "--use-contrastive",
+        action="store_true",
+        help="Enable contrastive learning loss"
+    )
+    parser.add_argument(
+        "--contrastive-weight",
+        type=float,
+        default=None,
+        help="Weight for contrastive loss (default: 0.1)"
+    )
+    parser.add_argument(
+        "--use-curriculum",
+        action="store_true",
+        help="Enable curriculum learning"
+    )
+    parser.add_argument(
+        "--curriculum-type",
+        type=str,
+        choices=["curriculum", "self_paced", "anti", "mixed"],
+        default=None,
+        help="Curriculum learning strategy (default: curriculum)"
+    )
+    
     return parser.parse_args()
 
 
@@ -128,6 +169,26 @@ def main():
     if args.no_stn:
         config.USE_STN = False
     
+    # New feature configurations
+    if args.temporal_fusion is not None:
+        config.TEMPORAL_FUSION_TYPE = args.temporal_fusion
+    
+    if args.loss_type is not None:
+        config.LOSS_TYPE = args.loss_type
+    
+    if args.use_contrastive:
+        config.USE_CONTRASTIVE = True
+        config.LOSS_TYPE = "combined"
+    
+    if args.contrastive_weight is not None:
+        config.CONTRASTIVE_WEIGHT = args.contrastive_weight
+    
+    if args.use_curriculum:
+        config.USE_CURRICULUM = True
+    
+    if args.curriculum_type is not None:
+        config.CURRICULUM_TYPE = args.curriculum_type
+    
     # Output directory
     config.OUTPUT_DIR = args.output_dir
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
@@ -138,6 +199,10 @@ def main():
     print(f"   EXPERIMENT: {config.EXPERIMENT_NAME}")
     print(f"   MODEL: {config.MODEL_TYPE}")
     print(f"   USE_STN: {config.USE_STN}")
+    print(f"   TEMPORAL_FUSION: {config.TEMPORAL_FUSION_TYPE}")
+    print(f"   LOSS_TYPE: {config.LOSS_TYPE}")
+    print(f"   USE_CONTRASTIVE: {config.USE_CONTRASTIVE}")
+    print(f"   USE_CURRICULUM: {config.USE_CURRICULUM}")
     print(f"   DATA_ROOT: {config.DATA_ROOT}")
     print(f"   EPOCHS: {config.EPOCHS}")
     print(f"   BATCH_SIZE: {config.BATCH_SIZE}")
@@ -232,11 +297,35 @@ def main():
         print("❌ Training dataset is empty!")
         sys.exit(1)
 
+    # Create curriculum sampler if enabled
+    sampler = None
+    shuffle = True
+    if config.USE_CURRICULUM:
+        print(f"📚 Using Curriculum Learning: {config.CURRICULUM_TYPE}")
+        if config.CURRICULUM_TYPE == "mixed":
+            sampler = get_curriculum_sampler(
+                config.CURRICULUM_TYPE,
+                train_ds,
+                batch_size=config.BATCH_SIZE,
+                seed=config.SEED
+            )
+        else:
+            sampler = get_curriculum_sampler(
+                config.CURRICULUM_TYPE,
+                train_ds,
+                num_epochs=config.EPOCHS,
+                start_ratio=config.CURRICULUM_START_RATIO,
+                end_epoch_ratio=config.CURRICULUM_END_EPOCH_RATIO,
+                seed=config.SEED
+            )
+        shuffle = False  # Sampler handles ordering
+
     # Create training data loader
     train_loader = DataLoader(
         train_ds,
         batch_size=config.BATCH_SIZE,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=sampler,
         collate_fn=MultiFrameDataset.collate_fn,
         num_workers=config.NUM_WORKERS,
         pin_memory=True
@@ -251,6 +340,7 @@ def main():
             transformer_ff_dim=config.TRANSFORMER_FF_DIM,
             dropout=config.TRANSFORMER_DROPOUT,
             use_stn=config.USE_STN,
+            temporal_fusion_type=config.TEMPORAL_FUSION_TYPE,
         ).to(config.DEVICE)
     else:
         model = MultiFrameCRNN(
@@ -271,7 +361,8 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         config=config,
-        idx2char=config.IDX2CHAR
+        idx2char=config.IDX2CHAR,
+        sampler=sampler
     )
     
     trainer.fit()
