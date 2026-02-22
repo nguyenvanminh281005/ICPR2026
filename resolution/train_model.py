@@ -7,7 +7,7 @@ from tqdm import tqdm
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 dataset = SRDataset(
-    r"C:\work\CVPR 2026\wYe7pBJ7-train\train",
+    r"/mnt/data/KHTN2023/Project/MultiFrame-LPR/data/old/train",
     hr_size=(32, 64),
     scale=2
 )
